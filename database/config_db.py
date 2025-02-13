@@ -1,6 +1,10 @@
+import logging
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from info import DATABASE_URI
-from datetime import datetime
+
+# Initialize Logger
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, uri, db_name):
@@ -10,121 +14,135 @@ class Database:
         self.config_col = self.db.configuration
 
     async def update_top_messages(self, user_id, message_text):
-        user = await self.col.find_one({"user_id": user_id, "messages.text": message_text})
-        
-        if not user:
-            await self.col.update_one(
-                {"user_id": user_id},
-                {"$push": {"messages": {"text": message_text, "count": 1}}},
-                upsert=True
-            )
-        else:
-            await self.col.update_one(
+        """Updates the count of a specific message for a user."""
+        try:
+            result = await self.col.update_one(
                 {"user_id": user_id, "messages.text": message_text},
                 {"$inc": {"messages.$.count": 1}}
             )
+            if result.matched_count == 0:
+                await self.col.update_one(
+                    {"user_id": user_id},
+                    {"$push": {"messages": {"text": message_text, "count": 1}}},
+                    upsert=True
+                )
+        except Exception as e:
+            logger.error(f"Error updating top messages: {e}")
 
     async def get_top_messages(self, limit=30):
-        pipeline = [
-            {"$unwind": "$messages"},
-            {"$group": {"_id": "$messages.text", "count": {"$sum": "$messages.count"}}},
-            {"$sort": {"count": -1}},
-            {"$limit": limit}
-        ]
-        results = await self.col.aggregate(pipeline).to_list(limit)
-        return [result['_id'] for result in results]
-    
+        """Retrieves the most frequently sent messages."""
+        try:
+            pipeline = [
+                {"$unwind": "$messages"},
+                {"$group": {"_id": "$messages.text", "count": {"$sum": "$messages.count"}}},
+                {"$sort": {"count": -1}},
+                {"$limit": limit}
+            ]
+            results = await self.col.aggregate(pipeline).to_list(limit)
+            return [result["_id"] for result in results]
+        except Exception as e:
+            logger.error(f"Error fetching top messages: {e}")
+            return []
+
     async def delete_all_messages(self):
-        await self.col.delete_many({})
+        """Deletes all stored messages from the database."""
+        try:
+            await self.col.delete_many({})
+        except Exception as e:
+            logger.error(f"Error deleting messages: {e}")
 
-    def create_configuration_data(
-            self, maintenance_mode=False,
-            auto_accept=True,
-            one_link=True,
-            one_link_one_file_group=False,
-            private_filter=True,
-            group_filter=True,
-            terms=True,
-            spoll_check=True,
-            forcesub=True,
-            shortner=None,
-            no_ads=False,
-            advertisement=None):
-        
+    def create_configuration_data(self):
+        """Creates default configuration data."""
         return {
-            'maintenance_mode': maintenance_mode,
-            'auto_accept': auto_accept,
-            'one_link': one_link,
-            'one_link_one_file_group': one_link_one_file_group,
-            'private_filter': private_filter,
-            'group_filter': group_filter,
-            'terms': terms,
-            'spoll_check': spoll_check,
-            'forcesub': forcesub,
-            'shortner': shortner,
-            'no_ads': no_ads,
-            'advertisement': advertisement,
+            "maintenance_mode": False,
+            "auto_accept": True,
+            "one_link": True,
+            "one_link_one_file_group": False,
+            "private_filter": True,
+            "group_filter": True,
+            "terms": True,
+            "spoll_check": True,
+            "forcesub": True,
+            "shortner": None,
+            "no_ads": False,
+            "advertisement": None,
         }
-    
-    
-    async def update_advirtisment(self, ads_string=None, ads_name=None, expiry=None, impression=None):
-        config = await self.config_col.find_one({})
-        if not config:
+
+    async def ensure_config_initialized(self):
+        """Ensures configuration data is initialized in the database."""
+        if not await self.config_col.find_one({}):
             await self.config_col.insert_one(self.create_configuration_data())
+
+    async def update_advertisement(self, ads_string=None, ads_name=None, expiry=None, impression=None):
+        """Updates the advertisement details in the configuration."""
+        try:
+            await self.ensure_config_initialized()
+            await self.config_col.update_one(
+                {},
+                {"$set": {"advertisement": {
+                    "ads_string": ads_string,
+                    "ads_name": ads_name,
+                    "expiry": expiry,
+                    "impression_count": impression
+                }}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error updating advertisement: {e}")
+
+    async def update_advertisement_impression(self, impression):
+        """Updates the impression count for the advertisement."""
+        try:
+            await self.config_col.update_one({}, {"$set": {"advertisement.impression_count": impression}}, upsert=True)
+        except Exception as e:
+            logger.error(f"Error updating advertisement impressions: {e}")
+
+    async def get_advertisement(self):
+        """Retrieves the advertisement details."""
+        try:
+            await self.ensure_config_initialized()
             config = await self.config_col.find_one({})
-
-        advertisement = config.get('advertisement')
-
-        if advertisement is None:
-            # If 'advertisement' field is not present, create it
-            advertisement = {}
-            config['advertisement'] = advertisement
-
-        # Update the fields within the 'advertisement' field
-        advertisement['ads_string'] = ads_string
-        advertisement['ads_name'] = ads_name
-        advertisement['expiry'] = expiry
-        advertisement['impression_count'] = impression
-
-        await self.config_col.update_one({}, {'$set': {'advertisement': advertisement}}, upsert=True)
-
-    async def update_advirtisment_impression(self, impression=None):
-        await self.config_col.update_one({}, {'$set': {'advertisement.impression_count': impression}}, upsert=True)
-
-    async def get_advirtisment(self):
-        configuration = await self.config_col.find_one({})
-        if not configuration:
-            await self.config_col.insert_one(self.create_configuration_data())
-            configuration = await self.config_col.find_one({})
-        advertisement = configuration.get('advertisement', False)
-        if advertisement:
-            return advertisement.get('ads_string'), advertisement.get('ads_name'), advertisement.get('impression_count')
-        return None, None, None
+            ad = config.get("advertisement", {})
+            return ad.get("ads_string"), ad.get("ads_name"), ad.get("impression_count")
+        except Exception as e:
+            logger.error(f"Error fetching advertisement: {e}")
+            return None, None, None
 
     async def reset_advertisement_if_expired(self):
-        configuration = await self.config_col.find_one({})
-        if configuration:
-            advertisement = configuration.get('advertisement', False)
-            if advertisement:
-                impression_count = advertisement.get('impression_count', 0)
-                expiry = advertisement.get('expiry', None)
-                if (impression_count == 0) or (expiry and datetime.now() > expiry):
-                    await self.config_col.update_one({}, {'$set': {'advertisement': None}})
-
-    
-    async def update_configuration(self, key, value):
+        """Resets the advertisement if it has expired or impressions are 0."""
         try:
-            await self.config_col.update_one({}, {'$set': {key: value}}, upsert=True)
+            config = await self.config_col.find_one({})
+            if not config:
+                return
 
+            ad = config.get("advertisement")
+            if ad:
+                expiry = ad.get("expiry")
+                impression_count = ad.get("impression_count", 0)
+
+                # Check expiration and reset if needed
+                if impression_count == 0 or (expiry and datetime.utcnow() > expiry):
+                    await self.config_col.update_one({}, {"$set": {"advertisement": None}})
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.error(f"Error resetting expired advertisement: {e}")
+
+    async def update_configuration(self, key, value):
+        """Updates a specific configuration setting."""
+        try:
+            await self.ensure_config_initialized()
+            await self.config_col.update_one({}, {"$set": {key: value}}, upsert=True)
+        except Exception as e:
+            logger.error(f"Error updating configuration '{key}': {e}")
 
     async def get_configuration_value(self, key):
-        configuration = await self.config_col.find_one({})
-        if not configuration:
-            await self.config_col.insert_one(self.create_configuration_data())
-            configuration = await self.config_col.find_one({})
-        return configuration.get(key, False)
+        """Retrieves a specific configuration value."""
+        try:
+            await self.ensure_config_initialized()
+            config = await self.config_col.find_one({})
+            return config.get(key, False)
+        except Exception as e:
+            logger.error(f"Error fetching configuration '{key}': {e}")
+            return False
 
-
+# Initialize Database Connection
 mdb = Database(DATABASE_URI, "admin_database")
