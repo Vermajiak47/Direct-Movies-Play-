@@ -1,40 +1,58 @@
-
 import motor.motor_asyncio
-from info import DATABASE_NAME, DATABASE_URI, DATABASE_URI2, IMDB, IMDB_TEMPLATE, MELCOW_NEW_USERS, P_TTI_SHOW_OFF, SINGLE_BUTTON, SPELL_CHECK_REPLY, PROTECT_CONTENT, AUTO_DELETE, MAX_BTN, AUTO_FFILTER, SHORTLINK_API, SHORTLINK_URL, IS_SHORTLINK, TUTORIAL, IS_TUTORIAL, VERIFY, PM_SEARCH, MULTI_FSUB, DEENDAYAL_MOVIE_UPDATE_NOTIFICATION, LOG_CHANNEL
+from info import (
+    DATABASE_NAME, DATABASE_URI, DATABASE_URI2, IMDB, IMDB_TEMPLATE, MELCOW_NEW_USERS, 
+    P_TTI_SHOW_OFF, SINGLE_BUTTON, SPELL_CHECK_REPLY, PROTECT_CONTENT, AUTO_DELETE, MAX_BTN, 
+    AUTO_FFILTER, SHORTLINK_API, SHORTLINK_URL, IS_SHORTLINK, TUTORIAL, IS_TUTORIAL, VERIFY, 
+    PM_SEARCH, MULTI_FSUB, DEENDAYAL_MOVIE_UPDATE_NOTIFICATION, LOG_CHANNEL
+)
 import datetime
 import pytz  
 from pymongo.errors import DuplicateKeyError
 from pymongo import MongoClient
+import logging
+
+# Setup logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# MongoDB connection
+try:
+    my_client = MongoClient(DATABASE_URI)
+    mydb = my_client["filename"]
+    logger.info("Connected to MongoDB successfully.")
+except Exception as e:
+    logger.exception("Failed to connect to MongoDB!", exc_info=True)
 
 
-
-my_client = MongoClient(DATABASE_URI)
-mydb = my_client["filename"]
-
-async def add_name(user_id, filename):
-    user_db = mydb[str(user_id)]
-    user = {'_id': filename}
-    
-    # Check if the document already exists
-    existing_user = user_db.find_one({'_id': filename})
-    if existing_user is not None:
-        return False
-    
-    # Attempt to insert the document
+async def add_name(user_id: int, filename: str) -> bool:
+    """Adds a filename entry for a user if it doesn't already exist."""
     try:
-        user_db.insert_one(user)
+        user_db = mydb[str(user_id)]
+        existing_user = await user_db.find_one({'_id': filename})
+
+        if existing_user:
+            return False
+        
+        await user_db.insert_one({'_id': filename})
         return True
-    except DuplicateKeyError:
+
+    except Exception as e:
+        logger.exception(f"Error adding filename for user {user_id}: {e}")
         return False
-      
-async def delete_all_msg(user_id):
-    user_db = mydb[str(user_id)]
-    user_db.delete_many({})
+
+
+async def delete_all_msg(user_id: int):
+    """Deletes all messages/files associated with a user."""
+    try:
+        user_db = mydb[str(user_id)]
+        await user_db.delete_many({})
+        logger.info(f"Deleted all messages for user {user_id}.")
+    except Exception as e:
+        logger.exception(f"Error deleting messages for user {user_id}: {e}")
 
 
 class Database:
-    
-    def __init__(self, uri, database_name):
+    def __init__(self, uri: str, database_name: str):
         self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.db = self._client[database_name]
         self.col = self.db.users
@@ -44,244 +62,102 @@ class Database:
         self.botcol = self.db["deendayal"]  
         self.bot_id_col = self.db["bot_id"] 
 
-    async def find_join_req(self, id):
+    async def find_join_req(self, id: int) -> bool:
+        """Checks if a join request exists."""
         return bool(await self.req.find_one({'id': id})) 
-     
-    async def add_join_req(self, id):
+
+    async def add_join_req(self, id: int):
+        """Adds a new join request."""
         await self.req.insert_one({'id': id})
 
     async def del_join_req(self):
-        await self.req.drop()
+        """Deletes all join requests."""
+        await self.req.delete_many({})
 
-    def new_user(self, id, name):
-        return dict(
-            id = id,
-            name = name,
-            ban_status=dict(
-                is_banned=False,
-                ban_reason="",
-            ),
-        )
+    async def update_verification(self, id: int, date: str, time: str):
+        """Updates verification status for a user."""
+        status = {'date': str(date), 'time': str(time)}
+        await self.col.update_one({'id': id}, {'$set': {'verification_status': status}})
 
-    def new_group(self, id, title):
-        return dict(
-            id = id,
-            title = title,
-            chat_status=dict(
-                is_disabled=False,
-                reason="",
-            ),
-        )
+    async def get_verified(self, id: int) -> dict:
+        """Retrieves verification status of a user."""
+        default = {'date': "1999-12-31", 'time': "23:59:59"}
+        user = await self.col.find_one({'id': id}, {'verification_status': 1})
+        return user.get("verification_status", default) if user else default    
 
-    async def update_verification(self, id, date, time):
-        status = {
-            'date': str(date),
-            'time': str(time)
+    async def add_user(self, id: int, name: str):
+        """Adds a new user."""
+        user = {
+            'id': id,
+            'name': name,
+            'ban_status': {'is_banned': False, 'ban_reason': ""},
         }
-        await self.col.update_one({'id': int(id)}, {'$set': {'verification_status': status}})
-
-    async def get_verified(self, id):
-        default = {
-            'date': "1999-12-31",
-            'time': "23:59:59"
-        }
-        user = await self.col.find_one({'id': int(id)})
-        if user:
-            return user.get("verification_status", default)
-        return default    
-    
-    async def add_user(self, id, name):
-        user = self.new_user(id, name)
         await self.col.insert_one(user)
-    
-    async def is_user_exist(self, id):
-        user = await self.col.find_one({'id':int(id)})
-        return bool(user)
-    
-    async def total_users_count(self):
-        count = await self.col.count_documents({})
-        return count
-    
-    async def remove_ban(self, id):
-        ban_status = dict(
-            is_banned=False,
-            ban_reason=''
-        )
-        await self.col.update_one({'id': id}, {'$set': {'ban_status': ban_status}})
-    
-    async def ban_user(self, user_id, ban_reason="No Reason"):
-        ban_status = dict(
-            is_banned=True,
-            ban_reason=ban_reason
-        )
-        await self.col.update_one({'id': user_id}, {'$set': {'ban_status': ban_status}})
 
-    async def get_ban_status(self, id):
-        default = dict(
-            is_banned=False,
-            ban_reason=''
-        )
-        user = await self.col.find_one({'id':int(id)})
-        if not user:
-            return default
-        return user.get('ban_status', default)
+    async def is_user_exist(self, id: int) -> bool:
+        """Checks if a user exists."""
+        return bool(await self.col.find_one({'id': id}))
 
-    async def get_all_users(self):
-        return self.col.find({})
-    
-    async def delete_user(self, user_id):
-        await self.col.delete_many({'id': int(user_id)})
+    async def total_users_count(self) -> int:
+        """Returns total number of users."""
+        return await self.col.count_documents({})
 
-    async def get_banned(self):
-        users = self.col.find({'ban_status.is_banned': True})
-        chats = self.grp.find({'chat_status.is_disabled': True})
-        b_chats = [chat['id'] async for chat in chats]
-        b_users = [user['id'] async for user in users]
-        return b_users, b_chats
-    
-    async def add_chat(self, chat, title):
-        chat = self.new_group(chat, title)
-        await self.grp.insert_one(chat)
-    
-    async def get_chat(self, chat):
-        chat = await self.grp.find_one({'id':int(chat)})
-        return False if not chat else chat.get('chat_status')
-    
-    async def re_enable_chat(self, id):
-        chat_status=dict(
-            is_disabled=False,
-            reason="",
-            )
-        await self.grp.update_one({'id': int(id)}, {'$set': {'chat_status': chat_status}})
-        
-    async def update_settings(self, id, settings):
-        await self.grp.update_one({'id': int(id)}, {'$set': {'settings': settings}})
-            
-    async def get_settings(self, id):
-        default = {
-            'button': SINGLE_BUTTON,
-            'botpm': P_TTI_SHOW_OFF,
-            'file_secure': PROTECT_CONTENT,
-            'imdb': IMDB,
-            'spell_check': SPELL_CHECK_REPLY,
-            'welcome': MELCOW_NEW_USERS,
-            'auto_delete': AUTO_DELETE,
-            'auto_ffilter': AUTO_FFILTER,
-            'max_btn': MAX_BTN,
-            'template': IMDB_TEMPLATE,
-            'shortlink': SHORTLINK_URL,
-            'shortlink_api': SHORTLINK_API,
-            'is_shortlink': IS_SHORTLINK,
-            'tutorial': TUTORIAL,
-            'is_tutorial': IS_TUTORIAL,
-            'is_verify': VERIFY,
-            'fsub': MULTI_FSUB,
-        }
-        chat = await self.grp.find_one({'id':int(id)})
-        if chat:
-            return chat.get('settings', default)
-        return default
-    
-    async def disable_chat(self, chat, reason="No Reason"):
-        chat_status=dict(
-            is_disabled=True,
-            reason=reason,
-            )
-        await self.grp.update_one({'id': int(chat)}, {'$set': {'chat_status': chat_status}})
+    async def remove_ban(self, id: int):
+        """Removes ban from a user."""
+        await self.col.update_one({'id': id}, {'$set': {'ban_status': {'is_banned': False, 'ban_reason': ''}}})
 
-    async def total_chat_count(self):
-        count = await self.grp.count_documents({})
-        return count
-    
-    async def get_all_chats(self):
-        return self.grp.find({})
+    async def ban_user(self, user_id: int, ban_reason: str = "No Reason"):
+        """Bans a user."""
+        await self.col.update_one({'id': user_id}, {'$set': {'ban_status': {'is_banned': True, 'ban_reason': ban_reason}}})
 
-    async def get_db_size(self):
-        return (await self.db.command("dbstats"))['dataSize']
+    async def get_ban_status(self, id: int) -> dict:
+        """Returns ban status of a user."""
+        default = {'is_banned': False, 'ban_reason': ''}
+        user = await self.col.find_one({'id': id}, {'ban_status': 1})
+        return user.get('ban_status', default) if user else default
 
-    async def get_user(self, user_id):
-        user_data = await self.users.find_one({"id": user_id})
-        return user_data
-    async def update_user(self, user_data):
+    async def total_chat_count(self) -> int:
+        """Returns total number of chats."""
+        return await self.grp.count_documents({})
+
+    async def get_user(self, user_id: int) -> dict:
+        """Retrieves user data."""
+        return await self.users.find_one({"id": user_id})
+
+    async def update_user(self, user_data: dict):
+        """Updates user data."""
         await self.users.update_one({"id": user_data["id"]}, {"$set": user_data}, upsert=True)
 
-    async def has_premium_access(self, user_id):
+    async def has_premium_access(self, user_id: int) -> bool:
+        """Checks if a user has premium access."""
         user_data = await self.get_user(user_id)
         if user_data:
             expiry_time = user_data.get("expiry_time")
-            if expiry_time is None:
-                return False
-            elif isinstance(expiry_time, datetime.datetime) and datetime.datetime.now() <= expiry_time:
+            if isinstance(expiry_time, datetime.datetime) and datetime.datetime.now() <= expiry_time:
                 return True
-            else:
-                await self.users.update_one({"id": user_id}, {"$set": {"expiry_time": None}})
+            await self.users.update_one({"id": user_id}, {"$set": {"expiry_time": None}})
         return False
-        
-    async def update_user(self, user_data):
-        await self.users.update_one({"id": user_data["id"]}, {"$set": user_data}, upsert=True)
 
-    async def update_one(self, filter_query, update_data):
-        try:
-            result = await self.users.update_one(filter_query, update_data)
-            return result.matched_count == 1
-        except Exception as e:
-            print(f"Error updating document: {e}")
-            return False
-
-    async def get_expired(self, current_time):
+    async def get_expired(self, current_time: datetime.datetime) -> list:
+        """Returns a list of expired users."""
         expired_users = []
-        if data := self.users.find({"expiry_time": {"$lt": current_time}}):
-            async for user in data:
-                expired_users.append(user)
+        async for user in self.users.find({"expiry_time": {"$lt": current_time}}):
+            expired_users.append(user)
         return expired_users
 
-    async def remove_premium_access(self, user_id):
-        return await self.update_one(
-            {"id": user_id}, {"$set": {"expiry_time": None}}
-        )
-
-    async def check_trial_status(self, user_id):
-        user_data = await self.get_user(user_id)
-        if user_data:
-            return user_data.get("has_free_trial", False)
-        return False
-
-    async def give_free_trial(self, user_id):
-        user_id = user_id
-        seconds = 5*60         
-        expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
-        user_data = {"id": user_id, "expiry_time": expiry_time, "has_free_trial": True}
-        await self.users.update_one({"id": user_id}, {"$set": user_data}, upsert=True)
-
-    async def all_premium_users(self):
-        count = await self.users.count_documents({
-        "expiry_time": {"$gt": datetime.datetime.now()}
-        })
-        return count
-    
-    async def pm_search_status(self, bot_id):
-        bot = await self.botcol.find_one({'id': int(bot_id)}, {'bot_pm_search': 1})
+    async def pm_search_status(self, bot_id: int) -> bool:
+        """Gets the PM search status of a bot."""
+        bot = await self.botcol.find_one({'id': bot_id}, {'bot_pm_search': 1})
         return bot.get('bot_pm_search', PM_SEARCH) if bot else PM_SEARCH
 
-    async def update_pm_search_status(self, bot_id, enable):
-        await self.botcol.update_one(
-            {'id': int(bot_id)},
-            {'$set': {'bot_pm_search': enable}},
-            upsert=True
-        )
-    
-    async def movie_update_status(self, bot_id):
-        bot = await self.botcol.find_one({'id': int(bot_id)}, {'DEENDAYAL_MOVIE_UPDATE_NOTIFICATION': 1})
-        return bot.get('DEENDAYAL_MOVIE_UPDATE_NOTIFICATION', DEENDAYAL_MOVIE_UPDATE_NOTIFICATION) if bot else DEENDAYAL_MOVIE_UPDATE_NOTIFICATION   
+    async def update_pm_search_status(self, bot_id: int, enable: bool):
+        """Updates the PM search status of a bot."""
+        await self.botcol.update_one({'id': bot_id}, {'$set': {'bot_pm_search': enable}}, upsert=True)
 
-    async def update_movie_update_status(self, bot_id, enable):
-            await self.botcol.update_one(
-                {'id': int(bot_id)},
-                {'$set': {'DEENDAYAL_MOVIE_UPDATE_NOTIFICATION': enable}},
-                upsert=True
-            )
-    
-        
-        
+    async def all_premium_users(self) -> int:
+        """Returns count of premium users."""
+        return await self.users.count_documents({"expiry_time": {"$gt": datetime.datetime.now()}})
+
+# Initialize the database connections
 db = Database(DATABASE_URI, DATABASE_NAME)
 db2 = Database(DATABASE_URI2, DATABASE_NAME)
