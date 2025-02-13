@@ -1,30 +1,23 @@
 import logging
 import logging.config
-logging.config.fileConfig('logging.conf')
+
+# Configure logging
+logging.config.fileConfig('logging.conf', disable_existing_loggers=False)
 logging.getLogger().setLevel(logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.ERROR)
-logging.getLogger("imdbpy").setLevel(logging.ERROR)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logging.getLogger("aiohttp").setLevel(logging.ERROR)
-logging.getLogger("aiohttp.web").setLevel(logging.ERROR)
 
-from pyrogram import Client
+# Suppress less relevant logs
+for lib in ["pyrogram", "imdbpy", "aiohttp", "aiohttp.web"]:
+    logging.getLogger(lib).setLevel(logging.ERROR)
+
+from pyrogram import Client, types
 from database.ia_filterdb import Media
-from info import *
 from utils import temp
-from typing import Union, Optional, AsyncGenerator
-from pyrogram import types
 from aiohttp import web
-
-from pyrogram import Client
+from typing import Union, Optional, AsyncGenerator
 from info import *
 
 
 class DeendayalXBot(Client):
-
     def __init__(self):
         super().__init__(
             name=SESSION,
@@ -35,46 +28,37 @@ class DeendayalXBot(Client):
             plugins={"root": "plugins"},
             sleep_threshold=5,
         )
+
     async def iter_messages(
-        self,
-        chat_id: Union[int, str],
-        limit: int,
-        offset: int = 0,
-    ) -> Optional[AsyncGenerator["types.Message", None]]:
-        """Iterate through a chat sequentially.
-        This convenience method does the same as repeatedly calling :meth:`~pyrogram.Client.get_messages` in a loop, thus saving
-        you from the hassle of setting up boilerplate code. It is useful for getting the whole chat messages with a
-        single call.
-        Parameters:
-            chat_id (``int`` | ``str``):
-                Unique identifier (int) or username (str) of the target chat.
-                For your personal cloud (Saved Messages) you can simply use "me" or "self".
-                For a contact that exists in your Telegram address book you can use his phone number (str).
-                
-            limit (``int``):
-                Identifier of the last message to be returned.
-                
-            offset (``int``, *optional*):
-                Identifier of the first message to be returned.
-                Defaults to 0.
-        Returns:
-            ``Generator``: A generator yielding :obj:`~pyrogram.types.Message` objects.
-        Example:
-            .. code-block:: python
-                for message in app.iter_messages("pyrogram", 1, 15000):
-                    print(message.text)
+        self, chat_id: Union[int, str], limit: int, offset_id: int = 0
+    ) -> AsyncGenerator[types.Message, None]:
         """
-        current = offset
-        while True:
-            new_diff = min(200, limit - current)
-            if new_diff <= 0:
-                return
-            messages = await self.get_messages(chat_id, list(range(current, current+new_diff+1)))
+        Iterates through messages in a chat sequentially.
+        
+        :param chat_id: Chat ID or username.
+        :param limit: Max number of messages to fetch.
+        :param offset_id: Start fetching from this message ID.
+        :return: Async generator yielding messages.
+        """
+        fetched_count = 0
+        last_message_id = offset_id
+
+        while fetched_count < limit:
+            batch_size = min(200, limit - fetched_count)
+            messages = await self.get_messages(chat_id, range(last_message_id + 1, last_message_id + batch_size + 1))
+
+            if not messages:
+                break  # No more messages to fetch
+            
             for message in messages:
                 yield message
-                current += 1
-      
+                last_message_id = message.message_id  # Update offset
+                fetched_count += 1
+
+
+# Initialize bot
 DeendayalBot = DeendayalXBot()
 
+# Dictionary for multi-client support
 multi_clients = {}
 work_loads = {}
